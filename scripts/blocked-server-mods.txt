@@ -1,0 +1,9 @@
+# One file name pattern per line. Any matching jar is deleted from the server's mods folder
+# after each build. Lines starting with # are ignored.
+# This is a safety net. The real fix is removing the mod from the pack itself.
+
+# Froze the server with a 60 second watchdog hang (crash report, Oct 10)
+c2me*.jar
+
+# Crashes the server at startup together with Distant Horizons 3.3.3: "Chunky is not loaded" (4 crash reports, Oct 11)
+chunky*.jar

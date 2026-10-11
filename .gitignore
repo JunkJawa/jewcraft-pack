@@ -1,0 +1,11 @@
+*.mrpack
+world/
+backups/
+staging/
+logs/
+crash-reports/
+*.log
+
+reports/
+scripts/settings.local.ps1
+server-extra-mods/*.jar

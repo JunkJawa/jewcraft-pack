@@ -1,0 +1,8 @@
+# key=value lines. Each one is applied on top of the server's existing server.properties
+# after every rebuild, so these survive updates. Existing values for other keys are kept.
+
+view-distance=8
+simulation-distance=6
+white-list=true
+enforce-whitelist=true
+online-mode=true

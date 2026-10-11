@@ -1,0 +1,25 @@
+{
+  "generic": "The server crashed and restarted, Gil's looking into it.",
+  "known": [
+    {
+      "id": "chunky-distant-horizons",
+      "match": "Chunky is not loaded",
+      "line": "The server crashed and restarted. Please don't use /chunky commands. Gil's fixing it."
+    },
+    {
+      "id": "out-of-memory",
+      "match": "OutOfMemoryError",
+      "line": "The server crashed and restarted. It ran out of memory. Big machine farms and lots of loaded chunks cause this, so spread heavy builds out for now."
+    },
+    {
+      "id": "server-froze",
+      "match": "A single server tick took|Watching Server|Server Watchdog",
+      "line": "The server froze and was restarted. Flying fast through new terrain can trigger it, so take it easy exploring new areas until Gil patches it."
+    },
+    {
+      "id": "ticking-entity-or-block",
+      "match": "Ticking (entity|block entity)",
+      "line": "The server crashed and restarted. If you just placed or spawned something unusual, hold off on using it and tell Gil what it was."
+    }
+  ]
+}

@@ -1,0 +1,5 @@
+# Copy this file to settings.local.ps1 and fill it in. settings.local.ps1 is not committed to git.
+$NtfyTopic = "jewcraft-REPLACE-WITH-LONG-RANDOM-TEXT"
+
+# Crafty API key, used to post crash notices in game chat. Create it in Crafty on your user page.
+$CraftyToken = ""
