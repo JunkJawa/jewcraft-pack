@@ -31,7 +31,7 @@ powershell -ExecutionPolicy Bypass -File .\update-server.ps1 -Pack "C:\path\to\J
 powershell -ExecutionPolicy Bypass -File .\update-server.ps1 -Pack "C:\path\to\JewCraft 1.1.0.mrpack"
 ```
 
-   Add `-NewWorld` to start a fresh world (the old one stays in the `old` folder).
+   The current world is always kept. This script cannot start a new world, and it stops if it cannot find the world.
 7. Start the server in Crafty and watch the Terminal for the "Done" line.
 8. Send friends the new .mrpack (or publish the new version on Modrinth).
 

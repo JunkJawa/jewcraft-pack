@@ -20,8 +20,8 @@ Stop the server in Crafty first. Start it again in Crafty when the script finish
 param(
     [Parameter(Mandatory = $true)][string]$Pack,
     [string]$NeoForgeVersion = "",
-    [switch]$NewWorld,
-    [switch]$DryRun
+    [switch]$DryRun,
+    [switch]$Yes   # skip the "Continue? (y/n)" question (used by the watcher after you tap Go)
 )
 
 $ErrorActionPreference = "Stop"
@@ -96,7 +96,10 @@ if (-not $NeoForgeVersion) {
 $propsFile = Join-Path $ServerDir "server.properties"
 $levelName = Get-Prop $propsFile "level-name" "world"
 Write-Host "    world folder: $levelName"
-if ($NewWorld) { Write-Host "    -NewWorld given: the old world will NOT be carried over" -ForegroundColor Yellow }
+$worldPath = Join-Path $ServerDir $levelName
+if (-not (Test-Path $worldPath)) {
+    throw "The world folder '$levelName' was not found in the server folder. Stopping so a new world is never created by accident."
+}
 
 # Config drift report: files edited on the server since the last build
 $marker = Join-Path $ServerDir ".last-build"
@@ -110,7 +113,7 @@ if (Test-Path $marker) {
             Write-Host "    They will be replaced by the pack's versions. Some are just mods rewriting their own files." -ForegroundColor Yellow
             $changed | ForEach-Object { Write-Host "      $($_.FullName.Substring($ServerDir.Length + 1))" }
             Write-Host "    If any edit should be kept, copy it into the Mac pack config (or server-overrides) before continuing." -ForegroundColor Yellow
-            if (-not $DryRun) {
+            if (-not $DryRun -and -not $Yes) {
                 $ans = Read-Host "    Continue? (y/n)"
                 if ($ans -ne "y") { throw "Stopped by you." }
             }
@@ -128,9 +131,13 @@ Run "Backing up to $Backups" {
         Compress-Archive -Path $items -DestinationPath $dest -CompressionLevel Fastest
         Write-Host "    saved $dest"
     } catch {
-        # Older Windows PowerShell can fail on very large archives. The old server folder is kept in full anyway.
+        # Older Windows PowerShell can fail on very large archives. Copy the world folder instead.
+        # The world is moved into the new server later, so this copy is the safety net. If it fails too, stop.
         Write-Host "    zip backup failed: $($_.Exception.Message)" -ForegroundColor Yellow
-        Write-Host "    continuing; the complete old server folder is kept in $OldRoot" -ForegroundColor Yellow
+        $worldCopy = Join-Path $Backups "world-$stamp"
+        Write-Host "    copying the world folder instead: $worldCopy" -ForegroundColor Yellow
+        Copy-Item $worldPath $worldCopy -Recurse -Force
+        if (-not (Test-Path $worldCopy)) { throw "Could not back up the world. Stopping before anything is changed." }
     }
 }
 
@@ -203,10 +210,9 @@ Run "Swapping the new server into place" {
     New-Item -ItemType Directory -Force -Path $OldRoot | Out-Null
     Move-Item $ServerDir $OldDir
     Move-Item $Staging $ServerDir
-    if (-not $NewWorld) {
-        $oldWorld = Join-Path $OldDir $levelName
-        if (Test-Path $oldWorld) { Move-Item $oldWorld (Join-Path $ServerDir $levelName) }
-    }
+    # The existing world always goes into the new server. This script never creates a new world.
+    Move-Item (Join-Path $OldDir $levelName) (Join-Path $ServerDir $levelName)
+    if (-not (Test-Path (Join-Path $ServerDir $levelName))) { throw "The world did not make it into the new server folder. Do the rollback steps in the README." }
     Set-Content -Path (Join-Path $ServerDir ".last-build") -Value $stamp -Encoding ascii
 }
 

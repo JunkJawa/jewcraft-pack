@@ -21,6 +21,8 @@ Usage (PowerShell, from the scripts folder):
   .\watch-server.ps1 -DryRun           show what it sees and would do, send and change nothing
   .\watch-server.ps1 -TestNtfy         send a test push to your phone and stop
   .\watch-server.ps1 -TestNotice       post a test line in game chat through Crafty and stop
+  .\watch-server.ps1 -TestPlayers      print how many players are online and stop
+  .\watch-server.ps1 -SetInstalled 1.1.0   tell the watcher which pack version the server runs now
   .\watch-server.ps1 -Simulate crash   pretend a crash was found and run the full path
                                        (also: offline, stuck). Uses one real Claude run.
 #>
@@ -28,6 +30,8 @@ param(
     [switch]$DryRun,
     [switch]$TestNtfy,
     [switch]$TestNotice,
+    [switch]$TestPlayers,
+    [string]$SetInstalled = "",
     [string]$Simulate = ""
 )
 
@@ -42,6 +46,18 @@ if (-not $StrikesBeforeAlert) { $StrikesBeforeAlert = 3 } # checks in a row befo
 if (-not $RepeatEvery)        { $RepeatEvery = 72 }       # repeat the alert every this many checks (72 x 5 = 6 hours)
 if (-not $CraftyUrl)          { $CraftyUrl = "https://localhost:8443" }
 if (-not $NoticePrefix)       { $NoticePrefix = "[JewCraft] " }
+if (-not $NtfyServer)         { $NtfyServer = "https://ntfy.sh" }
+if (-not $GitHubApi)          { $GitHubApi = "https://api.github.com" }
+if (-not $NtfyCommandTopic -and $NtfyTopic) { $NtfyCommandTopic = $NtfyTopic + "-cmd" }  # the topic your phone buttons talk to
+if (-not $UpdateHour)         { $UpdateHour = 4 }         # "Go at" time for scheduled updates (24 hour clock)
+if (-not $UpdateMinute)       { $UpdateMinute = 30 }
+if (-not $CountdownSeconds)   { $CountdownSeconds = 300 } # warning given to players before a "Go now" update
+if (-not $PollSeconds)        { $PollSeconds = 10 }
+if (-not $StopTimeoutSec)     { $StopTimeoutSec = 180 }
+if (-not $StartTimeoutSec)    { $StartTimeoutSec = 720 }
+if (-not $SettleSeconds)      { $SettleSeconds = 10 }
+if (-not $PowerShellExe)      { $PowerShellExe = "powershell.exe" }
+if (-not $ReleaseRepo)         { $ReleaseRepo = "JunkJawa/jewcraft-pack" }  # GitHub repo whose releases carry the new .mrpack files
 if (-not $CooldownHours)      { $CooldownHours = 3 }      # minimum hours between Claude diagnosis runs
 
 $RepoRoot  = Split-Path $PSScriptRoot -Parent
@@ -68,13 +84,14 @@ function Get-Prop([string]$file, [string]$key, [string]$default) {
     return $default
 }
 
-function Send-Push([string]$title, [string]$msg, [string]$priority, [string]$tags) {
+function Send-Push([string]$title, [string]$msg, [string]$priority, [string]$tags, [string]$actions = "") {
     if (-not $NtfyTopic) { Log "no ntfy topic set in settings.local.ps1, push skipped: $title"; return }
     if ($DryRun) { Log "[dry run] would push: $title | $msg"; return }
     $headers = @{ Title = $title; Priority = $priority }
     if ($tags) { $headers["Tags"] = $tags }
+    if ($actions) { $headers["Actions"] = $actions }
     try {
-        Invoke-RestMethod -Uri ("https://ntfy.sh/" + $NtfyTopic) -Method Post -Body $msg -Headers $headers | Out-Null
+        Invoke-RestMethod -Uri ($NtfyServer.TrimEnd("/") + "/" + $NtfyTopic) -Method Post -Body $msg -Headers $headers | Out-Null
         Log "push sent: $title"
     } catch {
         Log "push failed: $($_.Exception.Message)"
@@ -206,6 +223,13 @@ function Send-GameNotice([string]$line) {
     }
 }
 
+function Save-State {
+    if ($DryRun) { return }
+    try { $state | ConvertTo-Json | Set-Content -Path $StateFile -Encoding ASCII } catch { Log "could not save state: $($_.Exception.Message)" }
+}
+
+. (Join-Path $PSScriptRoot "updater.ps1")
+
 # ---------- Test push ----------
 if ($TestNtfy) {
     $DryRunSaved = $DryRun
@@ -222,7 +246,9 @@ if ($TestNotice) {
 }
 
 # ---------- Read state ----------
-$state = @{ lastCrashCheck = $NowUnix; offlineStrikes = 0; stuckStrikes = 0; lastDiagnosis = 0; pendingNotice = ""; pendingSince = 0 }
+$state = @{ lastCrashCheck = $NowUnix; offlineStrikes = 0; stuckStrikes = 0; lastDiagnosis = 0; pendingNotice = ""; pendingSince = 0
+          installedTag = ""; installedPub = 0; pendingTag = ""; pendingUrl = ""; pendingPub = 0; skippedTag = ""
+          scheduleAt = 0; scheduleTries = 0; lastCmdTime = $NowUnix; updatingSince = 0 }
 if (Test-Path $StateFile) {
     try {
         $j = Get-Content $StateFile -Raw | ConvertFrom-Json
@@ -232,11 +258,30 @@ if (Test-Path $StateFile) {
         $state.lastDiagnosis  = [long]$j.lastDiagnosis
         $state.pendingNotice  = [string]$j.pendingNotice
         $state.pendingSince   = [long]$j.pendingSince
+        $state.installedTag   = [string]$j.installedTag
+        $state.installedPub   = [long]$j.installedPub
+        $state.pendingTag     = [string]$j.pendingTag
+        $state.pendingUrl     = [string]$j.pendingUrl
+        $state.pendingPub     = [long]$j.pendingPub
+        $state.skippedTag     = [string]$j.skippedTag
+        $state.scheduleAt     = [long]$j.scheduleAt
+        $state.scheduleTries  = [int]$j.scheduleTries
+        if ($j.lastCmdTime)   { $state.lastCmdTime = [long]$j.lastCmdTime }
+        $state.updatingSince  = [long]$j.updatingSince
     } catch {
         Log "state file unreadable, starting fresh"
     }
 } else {
     Log "first run: crash reports that already exist will not be reported"
+}
+
+if ($SetInstalled) {
+    $state.installedTag = $SetInstalled
+    $state.installedPub = 0
+    $state.pendingTag = ""
+    Save-State
+    Log "recorded: the server runs pack version $SetInstalled"
+    exit 0
 }
 
 # During an update the server folder is briefly missing. Nothing to check then.
@@ -270,6 +315,11 @@ if (Test-Path $crashDir) {
 # 2 and 3. Offline or stuck
 $gamePort = $GamePort
 if (-not $gamePort) { $gamePort = [int](Get-Prop (Join-Path $ServerDir "server.properties") "server-port" "25565") }
+if ($TestPlayers) {
+    $n = Get-OnlinePlayers $gamePort
+    if ($n -lt 0) { Write-Host "The server did not answer on port $gamePort." } else { Write-Host "Players online: $n" }
+    exit 0
+}
 $javaRunning = (@(Get-Process java -ErrorAction SilentlyContinue)).Count -gt 0
 
 if (Test-Path $Flag) {
@@ -359,8 +409,12 @@ if ($findings.Count -eq 0) {
     }
 }
 
-# ---------- Save state ----------
-if (-not $DryRun) {
-    $state.lastCrashCheck = $NowUnix
-    try { $state | ConvertTo-Json | Set-Content -Path $StateFile -Encoding ASCII } catch { Log "could not save state: $($_.Exception.Message)" }
+# ---------- Updates (only when a release repo is set in settings.local.ps1) ----------
+$state.lastCrashCheck = $NowUnix
+if (-not ($findings | Where-Object { $_.kind -eq "crash" })) {
+    try { Invoke-UpdateCycle } catch { Log "update check problem: $($_.Exception.Message)" }
 }
+
+# ---------- Save state ----------
+$state.lastCrashCheck = $NowUnix
+Save-State

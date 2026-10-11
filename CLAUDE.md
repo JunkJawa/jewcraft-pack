@@ -20,6 +20,7 @@ Gil is not a developer. Explain things in plain language, a few sentences at a t
 ## What you must never do
 
 - Never edit, move, or delete anything in the live server folder, C:\crafty, or the playit settings.
+- Never create, replace, reset, move, or delete the world. The current world is the game world and must always be kept. Never suggest starting a new world or regenerating terrain, and never add a way to do it.
 - Never run scripts\update-server.ps1, start or stop the server, or kill the Java process.
 - Never touch Gil's Microsoft or Minecraft account, OneDrive, browsers, or anything outside the folders above.
 - Never add or remove mods yourself. Mods are changed in the Modrinth App on Gil's Mac. Say which mod to change and why.
@@ -76,3 +77,10 @@ To add an entry after a new kind of crash:
 4. After approval, add it to the "known" list, put more specific entries above broader ones, and check with a search that the pattern matches that crash report. Add a CHANGELOG.md entry and a line under Known issues above.
 5. It takes effect on the next watcher run. No update script is needed.
 Never change the "generic" line. Never post anything in game yourself.
+
+## Automatic updates (updater.ps1)
+
+- Gil drops a new .mrpack onto a GitHub Release of JunkJawa/jewcraft-pack. The watcher notices, pushes a message with Go now, Go at 4:30 AM and Skip buttons, and only updates after he taps one. It warns players in chat, stops the server through Crafty, runs scripts\update-server.ps1 -Yes, starts the server again, and reports back. Backups and old server folders are kept as always.
+- The watcher does this, not you. You still never run update-server.ps1, stop or start the server, or touch the Crafty key.
+- Do not edit scripts\updater.ps1 or C:\MinecraftServers\watch-state.json (it remembers which version is installed). If an update fails, read C:\MinecraftServers\update-<time>.log and propose a fix as usual.
+- If Gil asks what version the server is on, it is the installedTag in watch-state.json (read only).

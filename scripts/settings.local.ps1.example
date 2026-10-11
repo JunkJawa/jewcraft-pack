@@ -3,3 +3,8 @@ $NtfyTopic = "jewcraft-REPLACE-WITH-LONG-RANDOM-TEXT"
 
 # Crafty API key, used to post crash notices in game chat. Create it in Crafty on your user page.
 $CraftyToken = ""
+
+# Optional. Change only if you move the pack repo or want a different "Go at" time.
+# $ReleaseRepo = "JunkJawa/jewcraft-pack"
+# $UpdateHour = 4
+# $UpdateMinute = 30
