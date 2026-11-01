@@ -198,9 +198,16 @@ function Get-CrashLine([string]$crashFile) {
 function Send-GameNotice([string]$line) {
     if (-not $CraftyToken) { Log "no Crafty key set in settings.local.ps1, game notice skipped: $line"; return $false }
     if ($DryRun) { Log "[dry run] would post in game: $line"; return $true }
-    $serverId = Split-Path $ServerDir -Leaf
     $json = (@{ text = ($NoticePrefix + $line); color = "yellow" } | ConvertTo-Json -Compress)
-    $cmd = "tellraw @a " + $json
+    $ok = Send-ServerCommand ("tellraw @a " + $json)
+    if ($ok) { Log "game notice posted: $line" }
+    return $ok
+}
+
+function Send-ServerCommand([string]$cmd) {
+    if (-not $CraftyToken) { Log "no Crafty key set in settings.local.ps1, command skipped: $cmd"; return $false }
+    if ($DryRun) { Log "[dry run] would send server command: $cmd"; return $true }
+    $serverId = Split-Path $ServerDir -Leaf
     $call = @{
         Uri = ($CraftyUrl.TrimEnd("/") + "/api/v2/servers/" + $serverId + "/stdin")
         Method = "Post"; Body = $cmd; ContentType = "text/plain"
@@ -215,10 +222,9 @@ function Send-GameNotice([string]$line) {
             [System.Net.ServicePointManager]::CertificatePolicy = New-Object TrustLocalCert
         }
         Invoke-RestMethod @call | Out-Null
-        Log "game notice posted: $line"
         return $true
     } catch {
-        Log "game notice failed: $($_.Exception.Message)"
+        Log "server command failed ($cmd): $($_.Exception.Message)"
         return $false
     }
 }

@@ -6,10 +6,12 @@ What it does, in order:
   2. Backs up the world, whitelist, ops, and configs to a zip
   3. Builds fresh server files from the new .mrpack into a staging folder
   4. Installs the NeoForge version the pack asks for
-  5. Removes blocked mods, adds extra server mods, copies server-overrides
-  6. Carries over the world, whitelist, ops, bans, and server.properties
-  7. Applies the settings in server-config\server.properties.overrides and sets memory
-  8. Swaps the new folder into Crafty's server folder (the old one is kept)
+  5. Copies that NeoForge's launch file to neoforge_args.txt, so the Crafty start command never needs a version number
+  6. Removes blocked mods, adds extra server mods, copies server-overrides
+  7. Carries over the world, whitelist, ops, bans, and server.properties
+  8. Applies the settings in server-config\server.properties.overrides and sets memory
+  9. Swaps the new folder into Crafty's server folder (the old one is kept)
+ 10. Makes sure Crafty's start command is the version free one (needs the Crafty key in settings.local.ps1)
 
 Usage (PowerShell, from the scripts folder):
   .\update-server.ps1 -Pack "C:\path\to\JewCraft 1.1.0.mrpack" -DryRun   # shows the plan, changes nothing
@@ -26,6 +28,12 @@ param(
 
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "settings.ps1")
+$localSettings = Join-Path $PSScriptRoot "settings.local.ps1"
+if (Test-Path $localSettings) { . $localSettings }
+
+# The one start command Crafty should use from now on. It reads neoforge_args.txt,
+# which this script refreshes on every update, so a new NeoForge version needs no Crafty change.
+$StartCommand = "java @user_jvm_args.txt @neoforge_args.txt nogui"
 
 $RepoRoot = Split-Path $PSScriptRoot -Parent
 $stamp    = Get-Date -Format "yyyyMMdd-HHmmss"
@@ -66,6 +74,49 @@ function Set-Props([string]$file, [string]$overrideFile) {
     Set-Content -Path $file -Value $lines -Encoding ascii
 }
 
+# Copies NeoForge's win_args.txt to neoforge_args.txt in a server folder.
+# Uses the given version, or the newest one found in the folder when no version is given.
+function Write-NeoForgeArgs([string]$serverFolder, [string]$version) {
+    $base = Join-Path $serverFolder "libraries\net\neoforged\neoforge"
+    $src = $null
+    if ($version) {
+        $src = Join-Path $base "$version\win_args.txt"
+        if (-not (Test-Path $src)) { $src = $null }
+    } elseif (Test-Path $base) {
+        $src = Get-ChildItem $base -Directory | Sort-Object Name -Descending |
+            ForEach-Object { Join-Path $_.FullName "win_args.txt" } | Where-Object { Test-Path $_ } | Select-Object -First 1
+    }
+    if (-not $src) { return $false }
+    Copy-Item $src (Join-Path $serverFolder "neoforge_args.txt") -Force
+    return $true
+}
+
+# ---------- Crafty API (for the start command) ----------
+function Initialize-LocalCert {
+    if (-not ("TrustLocalCert" -as [type])) {
+        Add-Type -TypeDefinition "using System.Net; using System.Security.Cryptography.X509Certificates; public class TrustLocalCert : ICertificatePolicy { public bool CheckValidationResult(ServicePoint sp, X509Certificate c, WebRequest r, int p) { return true; } }"
+    }
+    [System.Net.ServicePointManager]::CertificatePolicy = New-Object TrustLocalCert
+}
+
+function Invoke-CraftyServerApi([string]$method, $body) {
+    $serverId = Split-Path $ServerDir -Leaf
+    $call = @{
+        Uri = ($CraftyUrl.TrimEnd("/") + "/api/v2/servers/" + $serverId)
+        Method = $method
+        Headers = @{ Authorization = ("Bearer " + $CraftyToken) }
+        TimeoutSec = 30
+    }
+    if ($body) { $call["Body"] = ($body | ConvertTo-Json -Compress); $call["ContentType"] = "application/json" }
+    if ($PSVersionTable.PSVersion.Major -ge 6) { $call["SkipCertificateCheck"] = $true } else { Initialize-LocalCert }
+    return Invoke-RestMethod @call
+}
+
+function Get-CraftyStartCommand {
+    $r = Invoke-CraftyServerApi "Get" $null
+    return [string]$r.data.execution_command
+}
+
 # ---------- Preflight (read only, runs even in a dry run) ----------
 Step "Preflight checks"
 
@@ -99,6 +150,19 @@ Write-Host "    world folder: $levelName"
 $worldPath = Join-Path $ServerDir $levelName
 if (-not (Test-Path $worldPath)) {
     throw "The world folder '$levelName' was not found in the server folder. Stopping so a new world is never created by accident."
+}
+
+# Report Crafty's current start command (read only)
+if ($CraftyToken -and $CraftyUrl) {
+    try {
+        $current = Get-CraftyStartCommand
+        if ($current -eq $StartCommand) { Write-Host "    Crafty start command: already version free" }
+        else { Write-Host "    Crafty start command is '$current'. It will be changed to '$StartCommand' after the swap." }
+    } catch {
+        Write-Host "    Could not read Crafty's start command: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "    No Crafty key in settings.local.ps1, so the start command cannot be checked or changed automatically." -ForegroundColor Yellow
 }
 
 # Config drift report: files edited on the server since the last build
@@ -160,6 +224,12 @@ Run "Installing NeoForge $NeoForgeVersion" {
     Remove-Item (Join-Path $Staging "neoforge-installer.jar.log") -Force -ErrorAction SilentlyContinue
 }
 
+Run "Writing neoforge_args.txt for NeoForge $NeoForgeVersion" {
+    if (-not (Write-NeoForgeArgs $Staging $NeoForgeVersion)) {
+        throw "NeoForge $NeoForgeVersion did not leave a win_args.txt in libraries. Nothing has been swapped yet; the live server is unchanged."
+    }
+}
+
 Run "Removing blocked mods and adding extra server mods" {
     $mods = Join-Path $Staging "mods"
     New-Item -ItemType Directory -Force -Path $mods | Out-Null
@@ -214,6 +284,28 @@ Run "Swapping the new server into place" {
     Move-Item (Join-Path $OldDir $levelName) (Join-Path $ServerDir $levelName)
     if (-not (Test-Path (Join-Path $ServerDir $levelName))) { throw "The world did not make it into the new server folder. Do the rollback steps in the README." }
     Set-Content -Path (Join-Path $ServerDir ".last-build") -Value $stamp -Encoding ascii
+    # Give the kept old folder its own neoforge_args.txt too, so a rollback starts with the same command.
+    if (Write-NeoForgeArgs $OldDir "") { Write-Host "    old folder can roll back with the same start command" }
+}
+
+$commandOk = $true
+Run "Making sure Crafty's start command is version free" {
+    if (-not ($CraftyToken -and $CraftyUrl)) {
+        $script:commandOk = $false
+        return
+    }
+    try {
+        if ((Get-CraftyStartCommand) -ne $StartCommand) {
+            Invoke-CraftyServerApi "Patch" @{ execution_command = $StartCommand } | Out-Null
+            if ((Get-CraftyStartCommand) -ne $StartCommand) { throw "Crafty accepted the request but the command did not change." }
+            Write-Host "    changed to: $StartCommand"
+        } else {
+            Write-Host "    already set"
+        }
+    } catch {
+        Write-Host "    Could not change it automatically: $($_.Exception.Message)" -ForegroundColor Yellow
+        $script:commandOk = $false
+    }
 }
 
 Write-Host ""
@@ -221,6 +313,14 @@ if ($DryRun) {
     Write-Host "Dry run finished. Nothing was changed." -ForegroundColor Green
 } else {
     Write-Host "Done." -ForegroundColor Green
+    if (-not $commandOk) {
+        Write-Host ""
+        Write-Host "ONE MANUAL STEP: in Crafty, open the server's Config tab and set the start command to:" -ForegroundColor Yellow
+        Write-Host "  $StartCommand" -ForegroundColor Yellow
+        Write-Host "You only ever do this once. After that, NeoForge changes need nothing in Crafty." -ForegroundColor Yellow
+        # Exit code 3 tells the watcher not to start the server until the command is fixed.
+        Write-Host ""
+    }
     Write-Host "Next: start the server in Crafty and wait for the 'Done' line in the Terminal."
     Write-Host "Backup zip:  $Backups\jewcraft-$stamp.zip"
     Write-Host "Old server:  $OldDir"
@@ -228,4 +328,5 @@ if ($DryRun) {
     Write-Host "To roll back: stop the server, then run"
     Write-Host "  Move-Item `"$ServerDir`" `"$Root\failed-$stamp`""
     Write-Host "  Move-Item `"$OldDir`" `"$ServerDir`""
+    if (-not $commandOk) { exit 3 }
 }

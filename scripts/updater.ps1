@@ -259,6 +259,16 @@ function Invoke-Update([bool]$countdown) {
             -RedirectStandardOutput $logFile -RedirectStandardError ($logFile + ".err")
         $null = $proc.Handle
         if (-not $proc.WaitForExit(2400000)) { try { $proc.Kill() } catch { }; throw "The update script ran longer than 40 minutes and was stopped. Check the server folder before starting it." }
+        if ($proc.ExitCode -eq 3) {
+            # Files are updated, but Crafty's start command could not be set automatically.
+            # Starting now would fail, so leave the server off and ask for the one time change.
+            Log "update finished, but Crafty's start command needs changing by hand"
+            $state.installedTag = $tag
+            $state.installedPub = [long]$state.pendingPub
+            $state.pendingTag = ""; $state.pendingUrl = ""; $state.pendingPub = 0
+            Send-Push "JewCraft updated, one step left" ("Files are on $tag, but Crafty's start command needs a one time change. In Crafty, Config tab, set it to: java @user_jvm_args.txt @neoforge_args.txt nogui and then start the server.") "high" "warning"
+            return
+        }
         if ($proc.ExitCode -ne 0) {
             $restartOld = Test-Path (Join-Path $ServerDir "server.properties")
             $tail = ""
