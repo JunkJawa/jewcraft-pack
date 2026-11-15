@@ -91,3 +91,15 @@ First release, built from CatTech 2 (Minecraft 1.21.1, NeoForge 21.1.213, 222 mo
 - Cleanup (1 Nov 2026): removed the expired one-time Easy block from watch-server.ps1 (it stopped on 16 Oct; the
   Send-ServerCommand helper stays). Removed the unused Open Loader ore pack from server-overrides\config\openloader,
   since boosted-ores_3 in world\datapacks does the job and the two would clash if Open Loader were ever added.
+- Watcher, hot server check (15 Nov 2026, Gil asked): from 12 to 15 Nov the server sat at about 85% CPU with nobody
+  online. A thread dump showed all 7 "DH-IO Thread" workers of Distant Horizons 3.3.3 spinning in
+  FullDataSourceV2DTO.readBlobToDataSourceDataArrayV2 for about 55 hours each (likely a damaged entry in
+  world\data\DistantHorizons.sqlite), and the daily restart had not run since the PC rebooted on 12 Nov.
+  watch-server.ps1 now samples the server's CPU for 10 seconds each run. If it is 40% or more of the whole PC with
+  0 players for 6 checks in a row (30 minutes, ignoring the first 20 minutes after a start), it pushes a message
+  and restarts the server through Crafty (restart_server). At most one automatic restart every 6 hours; if it is
+  still hot after that it pushes "still running hot" instead of restarting again. Never acts when anyone is online,
+  the player count cannot be read, maintenance.flag exists, an update is running, or the game port is not answering.
+  Also pushes once per server run if the server has gone 26 hours without a restart. Remembers its counts in
+  C:\MinecraftServers\hot-state.json. Thresholds can be changed in settings.local.ps1 (HotCpuPercent, HotChecks,
+  HotGraceMinutes, HotRestartGapHours, UptimeAlertHours). Test with .\watch-server.ps1 -Simulate hot (test push only).

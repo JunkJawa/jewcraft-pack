@@ -12,7 +12,9 @@ When it finds one it:
   2. runs ONE read only Claude diagnosis, at most once every few hours, saved in reports\
   3. sends a second push when the report is ready
 
-It never changes the server and never restarts anything.
+It also watches for a server that runs hot with nobody online (a mod stuck in a loop). After 30 minutes of
+that it pushes a message and restarts the server through Crafty, at most once every 6 hours. It pushes a note
+if the server has gone more than 26 hours without a restart. Apart from that it never changes the server.
 To pause the offline and stuck alerts while you work on the server, create an empty file
 named maintenance.flag in C:\MinecraftServers (the Root folder) and delete it when done.
 
@@ -25,6 +27,8 @@ Usage (PowerShell, from the scripts folder):
   .\watch-server.ps1 -SetInstalled 1.1.0   tell the watcher which pack version the server runs now
   .\watch-server.ps1 -Simulate crash   pretend a crash was found and run the full path
                                        (also: offline, stuck). Uses one real Claude run.
+  .\watch-server.ps1 -Simulate hot     print the server's CPU use now and send a test "running hot" push.
+                                       Restarts nothing.
 #>
 param(
     [switch]$DryRun,
@@ -59,12 +63,18 @@ if (-not $SettleSeconds)      { $SettleSeconds = 10 }
 if (-not $PowerShellExe)      { $PowerShellExe = "powershell.exe" }
 if (-not $ReleaseRepo)         { $ReleaseRepo = "JunkJawa/jewcraft-pack" }  # GitHub repo whose releases carry the new .mrpack files
 if (-not $CooldownHours)      { $CooldownHours = 3 }      # minimum hours between Claude diagnosis runs
+if (-not $HotCpuPercent)      { $HotCpuPercent = 40 }     # server CPU use (percent of the whole PC) that counts as hot with nobody on
+if (-not $HotChecks)          { $HotChecks = 6 }          # hot and empty checks in a row before a restart (6 x 5 = 30 minutes)
+if (-not $HotGraceMinutes)    { $HotGraceMinutes = 20 }   # ignore CPU this soon after the server starts (startup is busy)
+if (-not $HotRestartGapHours) { $HotRestartGapHours = 6 } # at most one automatic restart in this many hours
+if (-not $UptimeAlertHours)   { $UptimeAlertHours = 26 }  # push if the server has run this long without a restart
 
 $RepoRoot  = Split-Path $PSScriptRoot -Parent
 $Reports   = Join-Path $RepoRoot "reports"
 $StateFile = Join-Path $Root "watch-state.json"
 $LogFile   = Join-Path $Root "watch.log"
 $Flag      = Join-Path $Root "maintenance.flag"
+$HotFile   = Join-Path $Root "hot-state.json"
 $Now       = Get-Date
 $NowUnix   = [DateTimeOffset]::Now.ToUnixTimeSeconds()
 
@@ -234,6 +244,43 @@ function Save-State {
     try { $state | ConvertTo-Json | Set-Content -Path $StateFile -Encoding ASCII } catch { Log "could not save state: $($_.Exception.Message)" }
 }
 
+# The server's Java process (the biggest one, in case another Java program is open).
+function Get-ServerJava {
+    return Get-Process java -ErrorAction SilentlyContinue | Sort-Object WorkingSet64 -Descending | Select-Object -First 1
+}
+
+# Server CPU use as a percent of the whole PC, measured over a few seconds. -1 if it cannot be measured.
+function Measure-JavaCpu($proc, [int]$seconds) {
+    try {
+        $t0 = $proc.TotalProcessorTime
+        Start-Sleep -Seconds $seconds
+        $proc.Refresh()
+        $used = ($proc.TotalProcessorTime - $t0).TotalSeconds
+        return [Math]::Round(100 * $used / ($seconds * [Environment]::ProcessorCount), 1)
+    } catch {
+        return -1
+    }
+}
+
+function Read-HotState {
+    $h = @{ hotStrikes = 0; lastAutoRestart = 0; stillHotAlerted = $false; uptimeAlertedStart = 0 }
+    if (Test-Path $HotFile) {
+        try {
+            $j = Get-Content $HotFile -Raw | ConvertFrom-Json
+            $h.hotStrikes = [int]$j.hotStrikes
+            $h.lastAutoRestart = [long]$j.lastAutoRestart
+            $h.stillHotAlerted = [bool]$j.stillHotAlerted
+            $h.uptimeAlertedStart = [long]$j.uptimeAlertedStart
+        } catch { Log "hot-state.json unreadable, starting fresh" }
+    }
+    return $h
+}
+
+function Save-HotState($h) {
+    if ($DryRun) { return }
+    try { $h | ConvertTo-Json | Set-Content -Path $HotFile -Encoding ASCII } catch { Log "could not save hot state: $($_.Exception.Message)" }
+}
+
 . (Join-Path $PSScriptRoot "updater.ps1")
 
 # ---------- Test push ----------
@@ -363,13 +410,90 @@ if (Test-Path $Flag) {
     }
 }
 
+# 4. Running hot with nobody online (for example a mod stuck in a loop), and missed daily restarts
+$serverJava = $null
+if ($javaRunning) { $serverJava = Get-ServerJava }
+
+if ($Simulate -eq "hot") {
+    $cpu = -1
+    if ($serverJava) { $cpu = Measure-JavaCpu $serverJava 10 }
+    Write-Host "Server CPU use right now: $cpu% of the whole PC (hot means $HotCpuPercent% or more with nobody on)."
+    Send-Push "JewCraft running hot (TEST)" "This is a test. A real alert means the server used $HotCpuPercent% CPU or more with nobody on for 30 minutes, and it is being restarted." "high" "fire"
+    exit 0
+}
+
+$hot = Read-HotState
+$hotChanged = $false
+if ($serverJava -and -not (Test-Path $Flag) -and $state.stuckStrikes -eq 0 -and [long]$state.updatingSince -eq 0) {
+    $uptime = $Now - $serverJava.StartTime
+    $javaStart = ([DateTimeOffset]$serverJava.StartTime).ToUnixTimeSeconds()
+
+    # Missed daily restart: one push per server run.
+    if ($uptime.TotalHours -ge $UptimeAlertHours -and $hot.uptimeAlertedStart -ne $javaStart) {
+        $hours = [Math]::Floor($uptime.TotalHours)
+        Send-Push "JewCraft has not restarted" "The server has been running for $hours hours without a restart. Check the daily restart in Crafty's Schedules tab." "default" "calendar"
+        $hot.uptimeAlertedStart = $javaStart
+        $hotChanged = $true
+    }
+
+    if ($uptime.TotalMinutes -lt $HotGraceMinutes) {
+        if ($hot.hotStrikes -ne 0) { $hot.hotStrikes = 0; $hotChanged = $true }
+    } else {
+        $players = Get-OnlinePlayers $gamePort
+        $cpu = Measure-JavaCpu $serverJava 10
+        if ($players -eq 0 -and $cpu -ge $HotCpuPercent) {
+            $hot.hotStrikes++
+            $hotChanged = $true
+            Log "server CPU $cpu% with nobody online (hot check $($hot.hotStrikes) in a row)"
+        } else {
+            if ($hot.hotStrikes -ne 0) { $hot.hotStrikes = 0; $hotChanged = $true }
+            if ($cpu -ge 0) { Log "server CPU $cpu%, players online: $players" }
+        }
+
+        if ($hot.hotStrikes -ge $HotChecks) {
+            $minutes = $hot.hotStrikes * $IntervalMinutes
+            $recent = ($NowUnix - [long]$hot.lastAutoRestart) -lt ($HotRestartGapHours * 3600)
+            if ($recent) {
+                if (-not $hot.stillHotAlerted) {
+                    Send-Push "JewCraft still running hot" "The server is still using $cpu% CPU with nobody on, even after the automatic restart. It will not restart again on its own for now. It needs a look." "high" "fire"
+                    $hot.stillHotAlerted = $true
+                    $hotChanged = $true
+                }
+            } elseif ((Get-OnlinePlayers $gamePort) -ne 0) {
+                Log "someone joined, automatic restart skipped"
+                $hot.hotStrikes = 0
+                $hotChanged = $true
+            } elseif ($DryRun) {
+                Log "[dry run] would push and restart the server: CPU $cpu% with nobody online for about $minutes minutes"
+            } else {
+                Send-Push "JewCraft running hot" "The server used $cpu% CPU with nobody on for about $minutes minutes, so it is restarting now." "high" "fire"
+                try {
+                    Invoke-Crafty "restart_server"
+                    Log "automatic restart requested through Crafty (CPU $cpu%, nobody online)"
+                } catch {
+                    Log "automatic restart failed: $($_.Exception.Message)"
+                    Send-Push "JewCraft restart failed" "Could not restart the server through Crafty. Restart it in Crafty yourself." "high" "warning"
+                }
+                $hot.lastAutoRestart = $NowUnix
+                $hot.stillHotAlerted = $false
+                $hot.hotStrikes = 0
+                $hotChanged = $true
+            }
+        }
+    }
+} elseif ($hot.hotStrikes -ne 0) {
+    $hot.hotStrikes = 0
+    $hotChanged = $true
+}
+if ($hotChanged) { Save-HotState $hot }
+
 # Simulation for testing the full path
 if ($Simulate) {
     switch ($Simulate) {
         "crash"   { $findings += @{ kind = "crash"; priority = "high"; tags = "rotating_light"; title = "JewCraft crashed (TEST)"; push = "This is a simulated crash for testing."; detail = "SIMULATED TEST. Pretend a new crash report just appeared. Diagnose the newest real crash report." } }
         "offline" { $findings += @{ kind = "offline"; priority = "default"; tags = "zzz"; title = "JewCraft offline (TEST)"; push = "This is a simulated offline alert for testing."; detail = "SIMULATED TEST. Pretend the server has been offline for 30 minutes. Diagnose from the latest log." } }
         "stuck"   { $findings += @{ kind = "stuck"; priority = "high"; tags = "hourglass"; title = "JewCraft stuck (TEST)"; push = "This is a simulated stuck alert for testing."; detail = "SIMULATED TEST. Pretend Java is running but the game port has not answered for 30 minutes. Diagnose from the latest log." } }
-        default   { throw "-Simulate must be crash, offline, or stuck." }
+        default   { throw "-Simulate must be crash, offline, stuck, or hot." }
     }
 }
 
