@@ -103,3 +103,7 @@ First release, built from CatTech 2 (Minecraft 1.21.1, NeoForge 21.1.213, 222 mo
   Also pushes once per server run if the server has gone 26 hours without a restart. Remembers its counts in
   C:\MinecraftServers\hot-state.json. Thresholds can be changed in settings.local.ps1 (HotCpuPercent, HotChecks,
   HotGraceMinutes, HotRestartGapHours, UptimeAlertHours). Test with .\watch-server.ps1 -Simulate hot (test push only).
+- Bleeding (16 Nov 2026, Gil asked): server-overrides\config\mahoutsukai-server.toml sets BLEEDING_FROM_DAGGER_ONLY
+  = true (was false). With false, Mahou Tsukai 1.36.8 gave players its Bleeding effect from any damage; now only its
+  own dagger causes it. The rest of the file is the server's current config, unchanged. Server only, takes effect at
+  the next update; players do not need a new pack.
